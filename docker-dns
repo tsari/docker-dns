@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+which docker || exit 1
+
+# get the gateway IP which will be used to resolve the container names
+function dip() { docker inspect --format="{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}" "$1"; }
+
+# update the local /etc/hosts file to allow local name resolution
+function updateHosts () {
+    cat /etc/hosts.backup > /etc/hosts.dynamic
+    docker ps -q | while read CONTAINERID
+    do
+       IP=$(dip ${CONTAINERID})
+        echo $IP
+
+       if [ -n "${IP}" ] ; then
+          NAME=$(docker inspect --format='{{.Name}}' ${CONTAINERID} | cut -d "/" -f 2)
+          echo "${IP}    ${NAME}  #DOCKER-DELETE-ME" >> /etc/hosts.dynamic
+       fi
+    done
+
+    cat /etc/hosts.dynamic > /etc/hosts
+    echo 'Updated /etc/hosts with current ("docker ps") entries...'
+
+}
+
+function processEvents () {
+    if [ -z $1 ]; then
+        exit 1;
+    fi
+
+    cat /etc/hosts | grep -v '#DOCKER-DELETE-ME' > /etc/hosts.backup
+    if [ "$?" = 0 ]; then
+       echo "Checking for running docker containers..."
+    else
+       echo "Error modifying /etc/hosts, try running with sudo."
+       exit 1
+    fi
+
+    case "$1" in
+            start)
+                updateHosts
+                ;;
+
+            stop)
+                cat /etc/hosts.backup > /etc/hosts
+                ;;
+
+            *)
+                echo $"Usage: $0 {start|stop}"
+                exit 1
+    esac
+    echo "# Below are the docker hosts running at $(date). #DOCKER-DELETE-ME" >> /etc/hosts.docker.tmp
+
+
+    tail -10 /etc/hosts
+}
+
+# listen to docker events and react...
+docker events --filter 'event=start' --filter 'event=stop' | while read event
+
+do
+    container_name=`echo $event | sed -n 's/.*name=\(.*\)).*/\1/p'`
+    echo $container_name
+
+    event=$(echo $event | cut -d" " -f 3)
+    echo $event
+
+    processEvents $event
+done
